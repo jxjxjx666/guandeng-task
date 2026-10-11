@@ -38,7 +38,7 @@ python main.py --baseline 基准库.csv --input 解算输出.csv --output 报告
 python main.py --html report.html
 ```
 
-在线演示页就是这么生成的，地址是 <https://guandeng-diff-report.app.workbuddy.host/>。它是上面这条命令的产物，纯静态文件（源码在 `docs/index.html`），不依赖后端，也不需要额外的 Web 框架。
+在线演示页就是这么生成的，地址是 <https://jxjxjx666.github.io/guandeng-task/>。它由上面这条命令产出，纯静态文件（源码在 `docs/index.html`），由 GitHub Pages 直接从本仓库的 `docs/` 目录托管，不依赖后端，也没引任何 Web 框架。
 
 输入是 CSV，两份文件的列不一样：
 
