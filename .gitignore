@@ -9,3 +9,4 @@ venv/
 *.log
 out/
 data/
+diff_report.csv
