@@ -4,9 +4,9 @@ import math
 import pytest
 
 from main import (
-    ANOMALY, MISSING, OK, SEVERE,
+    ANOMALY, EXTRA, MISSING, OK, SEVERE,
     Baseline, Sample,
-    compare, format_report, summarize, to_meters,
+    compare, format_report, load_baseline, load_result, summarize, to_meters,
 )
 
 
@@ -84,8 +84,12 @@ def test_边界_解算缺失该部件():
 
 
 def test_单位混写同一物理点_偏移为零():
-    """基准用 mm、解算用 m 描述同一个点，换算后偏移必须是 0。"""
-    base = {"A": Baseline("A", 1.5, 2.5, 20.0, 1.0, "mm")}   # 1500mm/2500mm
+    """两边坐标都归一到米之后，同一个物理点的偏移应当是 0。
+
+    注意这条只覆盖 compare() 的算术：Baseline/Sample 是直接构造的，
+    x_m 字段本身就已经是米。换算「有没有被调用」由下面的集成测试负责。
+    """
+    base = {"A": Baseline("A", 1.5, 2.5, 20.0, 1.0, "m")}
     res = {"A": Sample("A", 1.5, 2.5, 20.0, "m")}
     assert compare(base, res)[0].coord_offset == pytest.approx(0.0)
 
@@ -117,3 +121,89 @@ def test_报告_无穷大比率不写inf():
     base = {"A": _base("A", 10, 0)}
     res = {"A": _samp("A", 10.1)}
     assert "inf" not in format_report(compare(base, res))
+
+
+# ---------------- 读 CSV 的整条链路（走 load_baseline / load_result） ----------------
+#
+# 这一组是补漏测用的。上面所有用例都是直接构造 Baseline / Sample，
+# 而这两个类的 x_m 字段本身就已经是米，于是 to_meters() 从来没被走过。
+# 后果：把 load_baseline 里的 to_meters(row["x"], unit) 改成 float(row["x"])，
+# 上面那些用例照样全绿，但真实数据会全部算错。下面几条守的就是这条链路。
+
+
+def _write(path, text):
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_集成_基准库读入时毫米真的被换算(tmp_path):
+    p = _write(tmp_path / "baseline.csv",
+               "part_id,x,y,unit,ref_value,limit\n"
+               "A,1500,2500,mm,20.0,1.0\n")
+    base = load_baseline(p)
+    assert base["A"].x_m == pytest.approx(1.5)    # 1500mm 必须变成 1.5m
+    assert base["A"].y_m == pytest.approx(2.5)
+
+
+def test_集成_解算输出读入时毫米真的被换算(tmp_path):
+    p = _write(tmp_path / "result.csv",
+               "part_id,x,y,unit,value\n"
+               "A,1500,2500,mm,20.5\n")
+    res = load_result(p)
+    assert res["A"].x_m == pytest.approx(1.5)
+    assert res["A"].y_m == pytest.approx(2.5)
+
+
+def test_集成_混单位端到端偏移为零(tmp_path):
+    """基准用毫米写、解算用米写同一个点，整条链路走完偏移必须是 0。"""
+    bp = _write(tmp_path / "b.csv",
+                "part_id,x,y,unit,ref_value,limit\nA,1500,2500,mm,20.0,1.0\n")
+    rp = _write(tmp_path / "r.csv",
+                "part_id,x,y,unit,value\nA,1.5,2.5,m,20.0\n")
+    d = compare(load_baseline(bp), load_result(rp))[0]
+    assert d.coord_offset == pytest.approx(0.0)
+
+
+def test_集成_米的写法不被误除(tmp_path):
+    """unit=m 的行不能被除以 1000，否则是把对的改错了。"""
+    p = _write(tmp_path / "m.csv",
+               "part_id,x,y,unit,ref_value,limit\nA,1.5,2.5,m,20.0,1.0\n")
+    assert load_baseline(p)["A"].x_m == pytest.approx(1.5)
+
+
+def test_集成_单位列非法时立刻报错(tmp_path):
+    """unit 写了个不认识的词，必须报错，不能静默当成米。"""
+    p = _write(tmp_path / "bad.csv",
+               "part_id,x,y,unit,ref_value,limit\nA,1500,2500,厘米,20.0,1.0\n")
+    with pytest.raises(ValueError):
+        load_baseline(p)
+
+
+# ---------------- 双向比对：越界部件 ----------------
+
+def test_越界_解算多出的部件被报出来():
+    base = {"A": _base("A", 10, 0.5)}
+    res = {"A": _samp("A", 10.0), "Z": _samp("Z", 3.0)}
+    diffs = {d.part_id: d for d in compare(base, res)}
+    assert diffs["Z"].status == EXTRA
+    assert diffs["Z"].ref_value is None
+
+
+def test_越界_不计入命中率分母():
+    base = {"A": _base("A", 10, 1.0), "B": _base("B", 10, 1.0)}
+    res = {"A": _samp("A", 10.0),      # OK
+           "B": _samp("B", 11.5),      # ANOMALY
+           "Z": _samp("Z", 3.0),       # EXTRA
+           "Y": _samp("Y", 4.0)}       # EXTRA
+    stats = summarize(compare(base, res))
+    assert stats["extra"] == 2
+    assert stats["compared"] == 2      # 分母不含越界件
+    assert stats["hit"] == 1
+    assert stats["hit_rate"] == pytest.approx(50.0)
+
+
+def test_越界_报告里标出EXTRA行():
+    base = {"A": _base("A", 10, 0.5)}
+    res = {"A": _samp("A", 10.0), "Z": _samp("Z", 3.0)}
+    text = format_report(compare(base, res))
+    assert "Z,EXTRA" in text

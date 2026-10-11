@@ -10,3 +10,4 @@ venv/
 out/
 data/
 diff_report.csv
+report.html

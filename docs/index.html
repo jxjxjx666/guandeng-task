@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>装备仿真数据核对报告</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#F5F7FA;color:#16324F;
+  font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 60px}
+header{background:linear-gradient(135deg,#16324F,#1F6FB2);color:#fff;
+  border-radius:14px;padding:22px 24px;margin-bottom:20px}
+header h1{margin:0 0 6px;font-size:22px}
+header p{margin:0;font-size:13.5px;opacity:.9}
+.cards{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:18px}
+.card{flex:1 1 132px;background:#fff;border:1px solid #D8E0EA;border-radius:10px;padding:12px 14px}
+.card .k{font-size:12.5px;color:#3A5670}
+.card .v{font-size:24px;font-weight:700;margin-top:2px}
+.v.red{color:#C0392B}.v.green{color:#1E8E4E}.v.yellow{color:#C77A0A}.v.dim{color:#7A8CA0}
+section{background:#fff;border:1px solid #D8E0EA;border-radius:12px;padding:18px 20px;margin-bottom:16px}
+h2{font-size:16px;margin:0 0 12px;padding-left:10px;border-left:4px solid #1F6FB2}
+.bar{height:26px;background:#EEF2F7;border-radius:6px;overflow:hidden;display:flex}
+.bar i{display:block;height:100%}
+.bar .hit{background:#C0392B}
+.bar .rest{background:transparent}
+.barlabel{font-size:13px;color:#3A5670;margin-top:6px}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th,td{border:1px solid #D8E0EA;padding:7px 9px;text-align:left}
+th{background:#EEF3F8}
+tbody tr.row-SEVERE{background:#FCEEEC}
+tbody tr.row-EXTRA{background:#FCEEEC}
+tbody tr.row-ANOMALY{background:#FDF5E6}
+tbody tr.row-MISSING{background:#F2F5F8}
+tbody tr.row-OK{background:#EBF6EF}
+.tag{display:inline-block;font-size:11.5px;font-weight:700;border-radius:999px;padding:1px 9px}
+.t-OK{background:#EBF6EF;color:#1E8E4E;border:1px solid #BFE3CD}
+.t-ANOMALY{background:#FDF5E6;color:#C77A0A;border:1px solid #EBD6AE}
+.t-SEVERE{background:#FCEEEC;color:#C0392B;border:1px solid #F0C6C0}
+.t-MISSING{background:#F2F5F8;color:#7A8CA0;border:1px solid #D8E0EA}
+.t-EXTRA{background:#FCEEEC;color:#C0392B;border:1px solid #F0C6C0}
+.note{font-size:13px;color:#3A5670}
+.flag{border-left:4px solid #C0392B;background:#FCEEEC;border-radius:0 8px 8px 0;padding:10px 14px;margin:10px 0}
+footer{font-size:12.5px;color:#3A5670;text-align:center;padding-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>装备仿真数据核对报告</h1>
+  <p>基准规则库：samples/baseline.csv　|　解算输出：samples/result.csv</p>
+  <p>生成时间：2026-10-11 11:27:12</p>
+</header>
+
+<div class="cards"><div class="card"><div class="k">参与比对部件</div><div class="v ">7</div></div><div class="card"><div class="k">正常</div><div class="v green">2</div></div><div class="card"><div class="k">异常</div><div class="v yellow">1</div></div><div class="card"><div class="k">严重超标</div><div class="v red">3</div></div><div class="card"><div class="k">缺失</div><div class="v dim">1</div></div><div class="card"><div class="k">越界</div><div class="v red">1</div></div><div class="card"><div class="k">异常命中率</div><div class="v red">57.1%</div></div></div>
+
+<section>
+  <h2>异常命中率</h2>
+  <div class="bar">
+    <i class="hit" style="width:57.1%"></i>
+  </div>
+  <div class="barlabel">命中 4 / 7（57.1%）
+  　·　分母是参与数值比对的部件数，不含越界件</div>
+</section>
+
+<div class="flag"><b>严重超标部件</b>（超差 ≥ 2 倍阈值）<ul><li><b>P002</b>　实测 24.5，基准 20，超差 4.50 倍阈值</li><li><b>P004</b>　实测 15.9，基准 15，超差 4.50 倍阈值</li><li><b>P006</b>　实测 11，基准 12，超差 2.50 倍阈值</li></ul></div><div class="flag"><b>越界部件</b>（解算里有、基准库里没有，疑似算法越界）<ul><li><b>P099</b>　实测 7.3，基准库中没有这个部件</li></ul></div>
+
+<section>
+  <h2>逐部件明细</h2>
+  <table>
+    <thead><tr>
+      <th>部件</th><th>判定</th><th>单位</th><th>实测</th><th>基准</th>
+      <th>差值</th><th>阈值</th><th>超差倍数</th><th>坐标偏移(m)</th>
+    </tr></thead>
+    <tbody><tr class='row-OK'><td><b>P001</b></td><td><span class='tag t-OK'>正常</span></td><td>m</td><td>10.2</td><td>10</td><td>+0.2</td><td>0.5</td><td>0.400</td><td>0.000000</td></tr><tr class='row-SEVERE'><td><b>P002</b></td><td><span class='tag t-SEVERE'>严重超标</span></td><td>m</td><td>24.5</td><td>20</td><td>+4.5</td><td>1</td><td>4.500</td><td>0.000000</td></tr><tr class='row-ANOMALY'><td><b>P003</b></td><td><span class='tag t-ANOMALY'>异常</span></td><td>m</td><td>30.4</td><td>30</td><td>+0.4</td><td>0.3</td><td>1.333</td><td>0.050000</td></tr><tr class='row-SEVERE'><td><b>P004</b></td><td><span class='tag t-SEVERE'>严重超标</span></td><td>mm</td><td>15.9</td><td>15</td><td>+0.9</td><td>0.2</td><td>4.500</td><td>0.000000</td></tr><tr class='row-OK'><td><b>P005</b></td><td><span class='tag t-OK'>正常</span></td><td>mm</td><td>25.1</td><td>25</td><td>+0.1</td><td>0.5</td><td>0.200</td><td>0.000000</td></tr><tr class='row-SEVERE'><td><b>P006</b></td><td><span class='tag t-SEVERE'>严重超标</span></td><td>mm</td><td>11</td><td>12</td><td>-1</td><td>0.4</td><td>2.500</td><td>0.000000</td></tr><tr class='row-MISSING'><td><b>P007</b></td><td><span class='tag t-MISSING'>缺失</span></td><td>m</td><td></td><td>18</td><td></td><td>0.5</td><td>0.000</td><td></td></tr><tr class='row-EXTRA'><td><b>P099</b></td><td><span class='tag t-EXTRA'>越界</span></td><td>mm</td><td>7.3</td><td></td><td></td><td></td><td></td><td></td></tr></tbody>
+  </table>
+  <p class="note">坐标偏移是两边坐标都归一到米之后算的欧氏距离。
+  基准与解算用不同单位写同一个物理点时，这一列应为 0，可用于验证单位换算是否生效。</p>
+</section>
+
+<footer>由 guandeng_task 自动生成　·　本地一条命令可复现</footer>
+</div>
+</body>
+</html>

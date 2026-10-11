@@ -131,6 +131,7 @@ OK = "OK"
 ANOMALY = "ANOMALY"
 SEVERE = "SEVERE"
 MISSING = "MISSING"
+EXTRA = "EXTRA"      # 解算里有、基准库里没有 → 算法越界，必须报，不能静默忽略
 
 SEVERE_RATIO = 2.0   # 超差比 >= 2 倍阈值 → 严重超标
 
@@ -155,7 +156,10 @@ def compare(baseline: dict[str, Baseline],
     """逐部件比对。
 
     以基准库为主表：基准库里有、解算输出里没有的，记为 MISSING（缺失）。
-    解算输出多出来的部件会被忽略（见 README「已知风险」）。
+    反向也要查一遍：解算输出里有、基准库里没有的，记为 EXTRA（越界），
+    这类部件往往代表算法算出了不该存在的东西，不能静默丢掉。
+
+    EXTRA 行的 limit/ratio 留 0，因为它没有对应的基准值，没法算超差比。
     """
     diffs: list[Diff] = []
 
@@ -188,29 +192,42 @@ def compare(baseline: dict[str, Baseline],
         diffs.append(Diff(pid, status, sample.unit_in, sample.value,
                           base.ref_value, delta, base.limit, ratio, offset))
 
+    # 反向查一遍：解算里有、基准库里没有的部件 → EXTRA（越界）
+    for pid, sample in result.items():
+        if pid in baseline:
+            continue
+        diffs.append(Diff(pid, EXTRA, sample.unit_in, sample.value,
+                          None, None, 0.0, 0.0, None))
+
     # 固定按 part_id 排序，保证报告可复现
     diffs.sort(key=lambda d: d.part_id)
     return diffs
 
 
 def summarize(diffs: list[Diff]) -> dict:
-    """统计异常命中率与严重超标数量。"""
+    """统计异常命中率、严重超标数量与越界部件数。"""
     total = len(diffs)
     ok = sum(1 for d in diffs if d.status == OK)
     anomaly = sum(1 for d in diffs if d.status == ANOMALY)
     severe = sum(1 for d in diffs if d.status == SEVERE)
     missing = sum(1 for d in diffs if d.status == MISSING)
+    extra = sum(1 for d in diffs if d.status == EXTRA)
 
-    # 异常命中率 = 检出异常（含严重超标）的部件数 / 参与比对的部件总数
+    # 异常命中率 = 检出异常（异常 + 严重超标）的部件数 / 参与数值比对的部件数。
+    # 分母刻意不含 EXTRA：越界和「数值算错」是两类不同故障，
+    # 混进同一个率里会互相稀释，两个问题都看不清楚。
     hit = anomaly + severe
+    compared = total - extra
     return {
         "total": total,
+        "compared": compared,
         "ok": ok,
         "anomaly": anomaly,
         "severe": severe,
         "missing": missing,
+        "extra": extra,
         "hit": hit,
-        "hit_rate": (hit / total * 100.0) if total else 0.0,
+        "hit_rate": (hit / compared * 100.0) if compared else 0.0,
     }
 
 
@@ -235,8 +252,9 @@ def format_report(diffs: list[Diff]) -> str:
             "" if d.value is None else f"{d.value:g}",
             "" if d.ref_value is None else f"{d.ref_value:g}",
             "" if d.diff is None else f"{d.diff:+g}",
-            f"{d.limit:g}",
-            "" if math.isinf(d.ratio) else f"{d.ratio:.3f}",
+            "" if d.status == EXTRA else f"{d.limit:g}",
+            # EXTRA 行没有基准值，超差比无意义，留空
+            "" if (d.limit == 0 or math.isinf(d.ratio)) else f"{d.ratio:.3f}",
             "" if d.coord_offset is None else f"{d.coord_offset:.6f}",
         ])
     return buf.getvalue()
@@ -245,9 +263,10 @@ def format_report(diffs: list[Diff]) -> str:
 def write_report(path: str, diffs: list[Diff], stats: dict) -> None:
     """把差异报告写到本地文件（UTF-8），并在结尾附一行汇总。"""
     text = format_report(diffs)
-    summary = (f"# 汇总: total={stats['total']} ok={stats['ok']} "
+    summary = (f"# 汇总: compared={stats['compared']} ok={stats['ok']} "
                f"anomaly={stats['anomaly']} severe={stats['severe']} "
-               f"missing={stats['missing']} hit_rate={stats['hit_rate']:.1f}%\n")
+               f"missing={stats['missing']} extra={stats['extra']} "
+               f"hit_rate={stats['hit_rate']:.1f}%\n")
     with open(path, "w", encoding="utf-8", newline="") as f:
         f.write(text)
         f.write(summary)
@@ -341,8 +360,8 @@ def render_target(diffs: list[Diff], color: Palette,
         else:
             ang = 2 * math.pi * i / n - math.pi / 2
 
-        if d.status == MISSING:
-            radius = 27.0            # 缺失件甩到靶外
+        if d.status in (MISSING, EXTRA):
+            radius = 27.0            # 缺失件和越界件都甩到靶外
         else:
             radius = min(d.ratio, SEVERE_RATIO) / SEVERE_RATIO * 22.0
 
@@ -351,7 +370,8 @@ def render_target(diffs: list[Diff], color: Palette,
         if not (0 <= r < rows and 0 <= c < width):
             continue
 
-        mark = {SEVERE: "✖", ANOMALY: "●", OK: "○", MISSING: "×"}[d.status]
+        mark = {SEVERE: "✖", ANOMALY: "●", OK: "○",
+                MISSING: "×", EXTRA: "▲"}[d.status]
         grid[r][c] = mark
 
     art = "\n".join("".join(row) for row in grid)
@@ -359,7 +379,8 @@ def render_target(diffs: list[Diff], color: Palette,
               f"{color.green('○')} 正常   "
               f"{color.yellow('●')} 异常   "
               f"{color.red('✖')} 严重超标   "
-              f"{color.dim('× 缺失')}")
+              f"{color.dim('× 缺失')}   "
+              f"{color.red('▲ 越界')}")
     return art + "\n" + legend
 
 
@@ -367,12 +388,14 @@ def print_summary(diffs: list[Diff], stats: dict, color: Palette) -> None:
     """打印汇总与严重超标部件清单。"""
     print()
     print(color.cyan("  ── 核对汇总 ────────────────────────────────"))
-    print(f"   参与比对部件   : {stats['total']}")
+    print(f"   参与比对部件   : {stats['compared']}")
     print(f"   正常           : {color.green(str(stats['ok']))}")
     print(f"   异常           : {color.yellow(str(stats['anomaly']))}")
     print(f"   严重超标       : {color.red(str(stats['severe']))}")
     if stats["missing"]:
         print(f"   缺失(未解算)   : {color.dim(str(stats['missing']))}")
+    if stats["extra"]:
+        print(f"   越界(多出)     : {color.red(str(stats['extra']))}")
     print(f"   异常命中率     : {stats['hit_rate']:.1f}%")
 
     offsets = [d.coord_offset for d in diffs if d.coord_offset is not None]
@@ -388,14 +411,170 @@ def print_summary(diffs: list[Diff], stats: dict, color: Palette) -> None:
             print(f"     {color.red(d.part_id)}  实测={d.value:g}"
                   f"  基准={d.ref_value:g}  超差={d.ratio:.2f}×阈值")
 
+    extra = [d for d in diffs if d.status == EXTRA]
+    if extra:
+        print()
+        print(color.red("  [!] 越界部件（解算里有、基准库里没有，疑似算法越界）："))
+        for d in extra:
+            print(f"     {color.red(d.part_id)}  实测={d.value:g}  基准值缺失")
+
 
 # --------------------------------------------------------------------------
-# 六、入口
+# 六、HTML 报告（在线地址用的那一页）
+# --------------------------------------------------------------------------
+
+_HTML_CSS = """
+*{box-sizing:border-box}
+body{margin:0;background:#F5F7FA;color:#16324F;
+  font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 60px}
+header{background:linear-gradient(135deg,#16324F,#1F6FB2);color:#fff;
+  border-radius:14px;padding:22px 24px;margin-bottom:20px}
+header h1{margin:0 0 6px;font-size:22px}
+header p{margin:0;font-size:13.5px;opacity:.9}
+.cards{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:18px}
+.card{flex:1 1 132px;background:#fff;border:1px solid #D8E0EA;border-radius:10px;padding:12px 14px}
+.card .k{font-size:12.5px;color:#3A5670}
+.card .v{font-size:24px;font-weight:700;margin-top:2px}
+.v.red{color:#C0392B}.v.green{color:#1E8E4E}.v.yellow{color:#C77A0A}.v.dim{color:#7A8CA0}
+section{background:#fff;border:1px solid #D8E0EA;border-radius:12px;padding:18px 20px;margin-bottom:16px}
+h2{font-size:16px;margin:0 0 12px;padding-left:10px;border-left:4px solid #1F6FB2}
+.bar{height:26px;background:#EEF2F7;border-radius:6px;overflow:hidden;display:flex}
+.bar i{display:block;height:100%}
+.bar .hit{background:#C0392B}
+.bar .rest{background:transparent}
+.barlabel{font-size:13px;color:#3A5670;margin-top:6px}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th,td{border:1px solid #D8E0EA;padding:7px 9px;text-align:left}
+th{background:#EEF3F8}
+tbody tr.row-SEVERE{background:#FCEEEC}
+tbody tr.row-EXTRA{background:#FCEEEC}
+tbody tr.row-ANOMALY{background:#FDF5E6}
+tbody tr.row-MISSING{background:#F2F5F8}
+tbody tr.row-OK{background:#EBF6EF}
+.tag{display:inline-block;font-size:11.5px;font-weight:700;border-radius:999px;padding:1px 9px}
+.t-OK{background:#EBF6EF;color:#1E8E4E;border:1px solid #BFE3CD}
+.t-ANOMALY{background:#FDF5E6;color:#C77A0A;border:1px solid #EBD6AE}
+.t-SEVERE{background:#FCEEEC;color:#C0392B;border:1px solid #F0C6C0}
+.t-MISSING{background:#F2F5F8;color:#7A8CA0;border:1px solid #D8E0EA}
+.t-EXTRA{background:#FCEEEC;color:#C0392B;border:1px solid #F0C6C0}
+.note{font-size:13px;color:#3A5670}
+.flag{border-left:4px solid #C0392B;background:#FCEEEC;border-radius:0 8px 8px 0;padding:10px 14px;margin:10px 0}
+footer{font-size:12.5px;color:#3A5670;text-align:center;padding-top:8px}
+"""
+
+_STATUS_CN = {OK: "正常", ANOMALY: "异常", SEVERE: "严重超标",
+              MISSING: "缺失", EXTRA: "越界"}
+
+
+def render_html(diffs: list[Diff], stats: dict, baseline_path: str,
+                result_path: str, generated_at: str) -> str:
+    """生成一份自包含的 HTML 核对报告（不引外部资源，双击即可打开）。"""
+    rate = stats["hit_rate"]
+    cards = [
+        ("参与比对部件", stats["compared"], ""),
+        ("正常", stats["ok"], "green"),
+        ("异常", stats["anomaly"], "yellow"),
+        ("严重超标", stats["severe"], "red"),
+        ("缺失", stats["missing"], "dim"),
+        ("越界", stats["extra"], "red"),
+        ("异常命中率", f"{rate:.1f}%", "red" if rate >= 50 else "yellow"),
+    ]
+    card_html = "".join(
+        f'<div class="card"><div class="k">{k}</div>'
+        f'<div class="v {c}">{v}</div></div>' for k, v, c in cards)
+
+    rows = []
+    for d in diffs:
+        def _n(x, fmt="g", plus=False):
+            if x is None:
+                return ""
+            return f"{x:+{fmt}}" if plus else f"{x:{fmt}}"
+        rows.append(
+            "<tr class='row-{st}'>"
+            "<td><b>{pid}</b></td>"
+            "<td><span class='tag t-{st}'>{cn}</span></td>"
+            "<td>{unit}</td><td>{val}</td><td>{ref}</td>"
+            "<td>{diff}</td><td>{lim}</td><td>{ratio}</td><td>{off}</td></tr>".format(
+                st=d.status, pid=d.part_id, cn=_STATUS_CN[d.status],
+                unit=d.unit_in, val=_n(d.value), ref=_n(d.ref_value),
+                diff=_n(d.diff, plus=True),
+                lim=f"{d.limit:g}" if d.limit else "",
+                ratio="" if math.isinf(d.ratio) else (f"{d.ratio:.3f}" if d.limit else ""),
+                off="" if d.coord_offset is None else f"{d.coord_offset:.6f}",
+            ))
+
+    severe = [d for d in diffs if d.status == SEVERE]
+    extra = [d for d in diffs if d.status == EXTRA]
+
+    flag_html = ""
+    if severe:
+        items = "".join(
+            f"<li><b>{d.part_id}</b>　实测 {d.value:g}，基准 {d.ref_value:g}，"
+            f"超差 {d.ratio:.2f} 倍阈值</li>" for d in severe)
+        flag_html += f'<div class="flag"><b>严重超标部件</b>（超差 ≥ 2 倍阈值）<ul>{items}</ul></div>'
+    if extra:
+        items = "".join(
+            f"<li><b>{d.part_id}</b>　实测 {d.value:g}，基准库中没有这个部件</li>" for d in extra)
+        flag_html += f'<div class="flag"><b>越界部件</b>（解算里有、基准库里没有，疑似算法越界）<ul>{items}</ul></div>'
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>装备仿真数据核对报告</title>
+<style>{_HTML_CSS}</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>装备仿真数据核对报告</h1>
+  <p>基准规则库：{baseline_path}　|　解算输出：{result_path}</p>
+  <p>生成时间：{generated_at}</p>
+</header>
+
+<div class="cards">{card_html}</div>
+
+<section>
+  <h2>异常命中率</h2>
+  <div class="bar">
+    <i class="hit" style="width:{min(rate, 100):.1f}%"></i>
+  </div>
+  <div class="barlabel">命中 {stats['hit']} / {stats['compared']}（{rate:.1f}%）
+  　·　分母是参与数值比对的部件数，不含越界件</div>
+</section>
+
+{flag_html}
+
+<section>
+  <h2>逐部件明细</h2>
+  <table>
+    <thead><tr>
+      <th>部件</th><th>判定</th><th>单位</th><th>实测</th><th>基准</th>
+      <th>差值</th><th>阈值</th><th>超差倍数</th><th>坐标偏移(m)</th>
+    </tr></thead>
+    <tbody>{''.join(rows)}</tbody>
+  </table>
+  <p class="note">坐标偏移是两边坐标都归一到米之后算的欧氏距离。
+  基准与解算用不同单位写同一个物理点时，这一列应为 0，可用于验证单位换算是否生效。</p>
+</section>
+
+<footer>由 guandeng_task 自动生成　·　本地一条命令可复现</footer>
+</div>
+</body>
+</html>
+"""
+
+
+# --------------------------------------------------------------------------
+# 七、入口
 # --------------------------------------------------------------------------
 
 
 def run(baseline_path: str, result_path: str, output_path: str,
-        color_enabled: bool, animate: bool, quiet: bool = False) -> dict:
+        color_enabled: bool, animate: bool, quiet: bool = False,
+        html_path: str | None = None) -> dict:
     """完整流程：读 → 换算 → 比对 → 落盘 → 展示。返回统计结果。"""
     color = Palette(color_enabled)
 
@@ -421,7 +600,7 @@ def run(baseline_path: str, result_path: str, output_path: str,
 
     if not quiet:
         print()
-        shooting_bar(stats["hit"], stats["total"], color, animate=animate)
+        shooting_bar(stats["hit"], stats["compared"], color, animate=animate)
         print()
         print(render_target(diffs, color))
         print_summary(diffs, stats, color)
@@ -430,6 +609,14 @@ def run(baseline_path: str, result_path: str, output_path: str,
     if not quiet:
         print()
         print(f"   差异报告已写入 : {color.cyan(output_path)}")
+
+    if html_path:
+        generated_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        html = render_html(diffs, stats, baseline_path, result_path, generated_at)
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        if not quiet:
+            print(f"   HTML 报告已写入: {color.cyan(html_path)}")
     return stats
 
 
@@ -442,6 +629,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="本机解算输出 CSV（默认 samples/result.csv）")
     ap.add_argument("-o", "--output", default="diff_report.csv",
                     help="差异报告输出路径（默认 diff_report.csv）")
+    ap.add_argument("--html", metavar="PATH",
+                    help="额外生成一份自包含的 HTML 报告（可选）")
     ap.add_argument("--no-color", action="store_true", help="关闭彩色输出")
     ap.add_argument("--no-anim", action="store_true", help="关闭进度条动画")
     args = ap.parse_args(argv)
@@ -452,7 +641,8 @@ def main(argv: list[str] | None = None) -> int:
     animate = (not args.no_anim) and is_tty
 
     try:
-        run(args.baseline, args.input, args.output, color_enabled, animate)
+        run(args.baseline, args.input, args.output, color_enabled, animate,
+            html_path=args.html)
     except FileNotFoundError as e:
         print(f"[ERROR] 找不到输入文件：{e.filename}", file=sys.stderr)
         return 2
